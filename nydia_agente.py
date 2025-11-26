@@ -31,6 +31,7 @@ def consolidar_archivos_excel(uploaded_files):
             
     if dataframes:
         df_consolidado = pd.concat(dataframes, ignore_index=True)
+        # Intentar inferir objetos para asegurar la correcta lectura de tipos
         df_consolidado = df_consolidado.infer_objects() 
         return df_consolidado
     else:
@@ -61,12 +62,13 @@ def nydia_procesar_lenguaje_natural(df, pregunta):
     # Intenta determinar los ejes X e Y por coincidencia de palabras clave
     for m in metricas:
         if m in pregunta:
+            # Encuentra el nombre original de la columna
             eje_y = df.select_dtypes(include=['number']).columns.tolist()[dimensiones.index(m)]
             break
             
     for d in dimensiones:
-        # Asegurarse de que X e Y no sean la misma columna
         if d in pregunta and d != (eje_y.lower() if eje_y else None): 
+            # Encuentra el nombre original de la columna
             eje_x = df.columns.tolist()[dimensiones.index(d)]
             break
 
@@ -111,19 +113,24 @@ def interfaz_agente_analisis(df_original):
 
     
     # ------------------------------------
-    # B. REFINAMIENTO Y FILTRADO MANUAL
+    # B. REFINAMIENTO Y FILTRADO MANUAL (BLOQUE CORREGIDO)
     # ------------------------------------
     st.sidebar.markdown("---")
     st.sidebar.header("🔍 2. Refinar y Filtrar")
     
-    # Filtros de Texto (Categorías)
+    # Filtros de Texto (Categorías) - CORREGIDO EL TYPEERROR
     text_cols = df.select_dtypes(include=['object']).columns
     for col in text_cols:
         if df[col].nunique() <= 50:
-            opciones_filtro = ['TODOS'] + sorted(df[col].dropna().unique().tolist())
+            
+            # SOLUCIÓN: Conversión a str antes de unique() y sorted()
+            unique_values = df[col].dropna().astype(str).unique().tolist()
+            opciones_filtro = ['TODOS'] + sorted(unique_values)
+            
             seleccion = st.sidebar.selectbox(f"Filtrar por **{col}**:", opciones_filtro, key=f"filter_{col}")
             if seleccion != 'TODOS':
-                df = df[df[col] == seleccion]
+                # Aplicamos el filtro comparando también el valor como str
+                df = df[df[col].astype(str) == seleccion]
     
     # Filtro de Rango Numérico
     columnas_numericas = df_original.select_dtypes(include=['number']).columns.tolist()
