@@ -7,7 +7,7 @@ import re
 # ----------------------------------------------------
 # CONFIGURACIÓN DE LA PÁGINA
 # ----------------------------------------------------
-st.set_page_config(layout="wide", page_title="NydIA: Análisis Multi-Formato y Fechas")
+st.set_page_config(layout="wide", page_title="NydIA: Análisis Multi-Formato con Gráfico Pie")
 
 # ----------------------------------------------------
 # 1. FUNCIÓN DE PERCEPCIÓN Y CONSOLIDACIÓN (Compatibilidad total de archivos)
@@ -57,7 +57,7 @@ def consolidar_archivos(uploaded_files):
         return pd.DataFrame()
 
 # ----------------------------------------------------
-# 2. FUNCIÓN DE NLP BASADA EN REGLAS (Incluye 'Torta')
+# 2. FUNCIÓN DE NLP BASADA EN REGLAS (NydIA - CEREBRO DE LENGUAJE NATURAL)
 # ----------------------------------------------------
 def nydia_procesar_lenguaje_natural(df, pregunta):
     """
@@ -70,7 +70,7 @@ def nydia_procesar_lenguaje_natural(df, pregunta):
     
     eje_x, eje_y, tipo = None, None, 'Barras'
     
-    # Intenta determinar el tipo de gráfico (Añadido 'Torta')
+    # Intenta determinar el tipo de gráfico (AÑADIDO: Torta)
     if 'linea' in pregunta or 'tendencia' in pregunta:
         tipo = 'Líneas'
     elif 'dispersión' in pregunta or 'scatter' in pregunta:
@@ -79,15 +79,17 @@ def nydia_procesar_lenguaje_natural(df, pregunta):
         tipo = 'Caja (Box Plot)'
     elif 'torta' in pregunta or 'pie' in pregunta or 'proporción' in pregunta:
         tipo = 'Torta (Pie)'
-
+        
     # Intenta determinar los ejes X e Y por coincidencia de palabras clave
     for m in metricas:
         if m in pregunta:
+            # Encuentra el nombre original de la columna
             eje_y = df.select_dtypes(include=['number']).columns.tolist()[dimensiones.index(m)]
             break
             
     for d in dimensiones:
         if d in pregunta and d != (eje_y.lower() if eje_y else None): 
+            # Encuentra el nombre original de la columna
             eje_x = df.columns.tolist()[dimensiones.index(d)]
             break
 
@@ -103,7 +105,7 @@ def nydia_procesar_lenguaje_natural(df, pregunta):
 # ----------------------------------------------------
 def interfaz_agente_analisis(df_original):
     
-    st.title("🤖 NydIA: Agente de Análisis Multi-Formato")
+    st.title("🤖 NydIA: Agente de Análisis con Lenguaje Natural")
     st.markdown("---")
     
     if df_original.empty:
@@ -112,29 +114,18 @@ def interfaz_agente_analisis(df_original):
 
     df = df_original.copy()
     
-    # Detección de columnas de fecha para el filtro
-    datetime_cols = []
-    for col in df.columns:
-        if df[col].dtype == 'object':
-            try:
-                df[col] = pd.to_datetime(df[col], errors='coerce')
-                if df[col].notna().sum() / len(df) > 0.5:
-                    datetime_cols.append(col)
-            except Exception:
-                pass 
-        elif pd.api.types.is_datetime64_any_dtype(df[col]):
-            datetime_cols.append(col)
-
-
     # ------------------------------------
     # A. INTERACCIÓN NLP Y FILTROS
     # ------------------------------------
     
     st.sidebar.header("💬 1. Pregúntale a NydIA")
+    
     pregunta_nlp = st.sidebar.text_input(
-        "Ej: Muestra las 'Ventas' por 'Región' en un gráfico de torta.", 
+        "Ej: Muestra las 'Ventas' por 'Región' en un gráfico de barras.", 
         key='nlp_input'
     )
+    
+    # Inicialización de variables de selección
     eje_x_auto, eje_y_auto, tipo_auto = None, None, 'Barras'
     
     if pregunta_nlp:
@@ -143,36 +134,7 @@ def interfaz_agente_analisis(df_original):
 
     
     # ------------------------------------
-    # B. FILTRO DE FECHAS
-    # ------------------------------------
-    st.sidebar.markdown("---")
-    st.sidebar.header("🗓️ Filtro de Fechas")
-    
-    if datetime_cols:
-        col_fecha = st.sidebar.selectbox("Columna de Fecha:", ['Seleccionar'] + datetime_cols)
-        
-        if col_fecha != 'Seleccionar':
-            # Aseguramos que la columna no tiene NaT y que es tipo datetime
-            df_fechas_validas = df[col_fecha].dropna()
-            if not df_fechas_validas.empty:
-                min_date = df_fechas_validas.min().date()
-                max_date = df_fechas_validas.max().date()
-                
-                fecha_inicio = st.sidebar.date_input('Fecha de Inicio', value=min_date, min_value=min_date, max_value=max_date)
-                fecha_fin = st.sidebar.date_input('Fecha de Fin', value=max_date, min_value=min_date, max_value=max_date)
-                
-                if fecha_inicio <= fecha_fin:
-                    df = df[
-                        (df[col_fecha].dt.date >= fecha_inicio) & 
-                        (df[col_fecha].dt.date <= fecha_fin)
-                    ]
-                else:
-                    st.sidebar.error("La fecha de inicio debe ser anterior o igual a la fecha de fin.")
-            else:
-                 st.sidebar.warning("La columna de fecha seleccionada no contiene valores válidos para filtrar.")
-                
-    # ------------------------------------
-    # C. REFINAMIENTO Y FILTRADO MANUAL
+    # B. REFINAMIENTO Y FILTRADO MANUAL (BLOQUE CORREGIDO)
     # ------------------------------------
     st.sidebar.markdown("---")
     st.sidebar.header("🔍 2. Refinar y Filtrar")
@@ -188,6 +150,7 @@ def interfaz_agente_analisis(df_original):
             
             seleccion = st.sidebar.selectbox(f"Filtrar por **{col}**:", opciones_filtro, key=f"filter_{col}")
             if seleccion != 'TODOS':
+                # Aplicamos el filtro comparando también el valor como str
                 df = df[df[col].astype(str) == seleccion]
     
     # Filtro de Rango Numérico
@@ -211,7 +174,7 @@ def interfaz_agente_analisis(df_original):
         return
 
     # ------------------------------------
-    # D. CONFIGURACIÓN FINAL DEL GRÁFICO
+    # C. CONFIGURACIÓN FINAL DEL GRÁFICO
     # ------------------------------------
     st.sidebar.markdown("---")
     st.sidebar.header("📈 3. Configuración Final")
@@ -239,6 +202,7 @@ def interfaz_agente_analisis(df_original):
         index=eje_y_index
     )
 
+    # TIPOS DE GRÁFICO (AÑADIDO: Torta (Pie))
     tipos_grafico = ['Barras', 'Líneas', 'Dispersión (Scatter)', 'Histograma', 'Caja (Box Plot)', 'Torta (Pie)']
     tipo_grafico_index = tipos_grafico.index(tipo_auto) if tipo_auto in tipos_grafico else 0
 
@@ -249,7 +213,7 @@ def interfaz_agente_analisis(df_original):
     )
 
     metodo_agregacion = 'Ninguna'
-    if tipo_grafico in ['Barras', 'Líneas', 'Torta (Pie)']:
+    if tipo_grafico in ['Barras', 'Líneas', 'Torta (Pie)']: # Torta necesita agregación
         metodo_agregacion = st.sidebar.selectbox(
             "Método de Agregación:", 
             ['Suma', 'Promedio', 'Conteo']
@@ -257,7 +221,7 @@ def interfaz_agente_analisis(df_original):
     
     
     # ------------------------------------
-    # E. GENERACIÓN DEL GRÁFICO (ACCIÓN)
+    # D. GENERACIÓN DEL GRÁFICO (ACCIÓN)
     # ------------------------------------
     
     st.subheader(f"Resultado | Tipo: **{tipo_grafico}** | Filas analizadas: {len(df)}")
@@ -281,7 +245,6 @@ def interfaz_agente_analisis(df_original):
             elif tipo_grafico == 'Torta (Pie)':
                 # Grafico de Torta (Pie Chart)
                 fig = px.pie(df_agregado, names=eje_x, values=y_col_name, title=f"Proporción de {metodo_agregacion} de {eje_y} por {eje_x}")
-                
 
         elif tipo_grafico == 'Dispersión (Scatter)':
             fig = px.scatter(df, x=eje_x, y=eje_y, title=f"Relación entre {eje_x} y {eje_y}", hover_data=columnas_disponibles)
@@ -312,7 +275,7 @@ def main():
         accept_multiple_files=True
     )
     
-    # Nota: La función consolidar_archivos tiene el mismo nombre que antes pero con la lógica mejorada.
+    # La función de consolidación ahora maneja múltiples formatos
     datos_consolidados = consolidar_archivos(uploaded_files) 
     
     interfaz_agente_analisis(datos_consolidados)
