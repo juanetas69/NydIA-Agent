@@ -224,9 +224,9 @@ def interfaz_agente_analisis(df_original):
                 else:
                     st.sidebar.error("La fecha de inicio debe ser anterior o igual a la fecha de fin.")
     
-    # Verificar si el DataFrame quedó vacío después de los filtros
+    # Verificar si el DataFrame quedó vacío después de los filtros de fecha
     if df.empty:
-        st.error("No hay datos para graficar después de aplicar los filtros.")
+        st.error("No hay datos para graficar después de aplicar los filtros de fecha.")
         return
         
     # Filtros de Texto (Categorías)
@@ -256,7 +256,7 @@ def interfaz_agente_analisis(df_original):
                 (df[col_num_a_filtrar] <= rango_seleccionado[1])
             ]
     
-    # Verificar nuevamente si el DataFrame quedó vacío después de más filtros
+    # Verificar si el DataFrame quedó vacío después de más filtros
     if df.empty:
         st.error("No hay datos para graficar después de aplicar los filtros.")
         return
@@ -325,7 +325,7 @@ def interfaz_agente_analisis(df_original):
     
     
     # ------------------------------------
-    # D. GENERACIÓN DEL GRÁFICO (Punto de acción principal)
+    # D. GENERACIÓN DEL GRÁFICO
     # ------------------------------------
     
     st.subheader(f"Resultado | Tipo: **{tipo_grafico}** | Filas analizadas: {len(df)}")
@@ -337,17 +337,24 @@ def interfaz_agente_analisis(df_original):
              return
                  
         if tipo_grafico in ['Barras', 'Líneas', 'Torta (Pie)']:
+            
+            # 💡 CORRECCIÓN CLAVE: Manejo de valores nulos en el eje de agrupación (eje_x)
+            df_group = df.copy() 
+            # Rellenar NaN en la columna de agrupación con un valor que permita agruparlos.
+            # Esto evita el error "DataFrame agregado está vacío" si eje_x tiene todos los nulls.
+            if eje_x in df_group.columns:
+                 df_group[eje_x] = df_group[eje_x].fillna('Sin Categoría')
+            
             # Agregación de datos
             if metodo_agregacion == 'Suma':
-                df_agregado = df.groupby(eje_x)[eje_y].sum().reset_index(name=f'Suma de {eje_y}')
+                df_agregado = df_group.groupby(eje_x)[eje_y].sum().reset_index(name=f'Suma de {eje_y}')
             elif metodo_agregacion == 'Promedio':
-                df_agregado = df.groupby(eje_x)[eje_y].mean().reset_index(name=f'Promedio de {eje_y}')
+                df_agregado = df_group.groupby(eje_x)[eje_y].mean().reset_index(name=f'Promedio de {eje_y}')
             else: # Conteo
-                df_agregado = df.groupby(eje_x).size().reset_index(name='Conteo de Elementos')
+                df_agregado = df_group.groupby(eje_x).size().reset_index(name='Conteo de Elementos')
             
-            # **NUEVA VERIFICACIÓN DE ROBUSTEZ:**
             if df_agregado.empty:
-                 st.warning("El DataFrame agregado está vacío. No se puede generar el gráfico.")
+                 st.warning("El DataFrame agregado está vacío. Esto indica que no hay datos válidos para la Métrica y la Dimensión seleccionadas después de los filtros.")
                  return
                  
             y_col_name = df_agregado.columns[-1] 
