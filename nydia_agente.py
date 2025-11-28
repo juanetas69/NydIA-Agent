@@ -10,7 +10,7 @@ import re
 st.set_page_config(layout="wide", page_title="NydIA: Agente Conversacional de Análisis")
 
 # ----------------------------------------------------
-# INICIALIZACIÓN DE LA SESIÓN DE CHAT
+# INICIALIZACIÓN DEL ESTADO DE SESIÓN (Memoria del Chat)
 # ----------------------------------------------------
 def initialize_session_state():
     """Inicializa el estado de la sesión para el chat y las sugerencias de NydIA."""
@@ -77,7 +77,8 @@ def consolidar_archivos(uploaded_files):
 # ----------------------------------------------------
 def nydia_procesar_lenguaje_natural(df, pregunta):
     """
-    Intenta interpretar la pregunta del usuario para preseleccionar el gráfico y actualiza el estado.
+    Intenta interpretar la pregunta del usuario para preseleccionar el gráfico y actualiza el estado
+    de la sesión con las sugerencias.
     """
     pregunta = pregunta.lower().strip()
     
@@ -99,12 +100,14 @@ def nydia_procesar_lenguaje_natural(df, pregunta):
     # Detección de ejes (métricas)
     for m in metricas:
         if m in pregunta:
+            # Encuentra el nombre original de la columna
             eje_y = df.select_dtypes(include=['number']).columns.tolist()[dimensiones.index(m)]
             break
             
     # Detección de ejes (dimensiones)
     for d in dimensiones:
         if d in pregunta and d != (eje_y.lower() if eje_y else None): 
+            # Encuentra el nombre original de la columna
             eje_x = df.columns.tolist()[dimensiones.index(d)]
             break
 
@@ -121,13 +124,13 @@ def nydia_procesar_lenguaje_natural(df, pregunta):
     st.session_state.suggestion_type = tipo
     
     
-    # Generar respuesta de NydIA
+    # Generar respuesta de NydIA para el chat
     respuesta = "Interpretación: "
     if eje_y:
         respuesta += f"Métrica (Eje Y): **{eje_y}**. "
     if eje_x:
         respuesta += f"Dimensión (Eje X): **{eje_x}**. "
-    respuesta += f"Tipo de Gráfico: **{tipo}**. Por favor, revisa la sección '3. Configuración Final' para confirmar."
+    respuesta += f"Tipo de Gráfico: **{tipo}**. Los valores han sido preseleccionados en la sección '3. Configuración Final'."
     
     if not eje_x and not eje_y:
          respuesta = "No pude identificar la Métrica ni la Dimensión. Por favor, sé más específico (ej: 'Quiero la suma de Venta por País en un gráfico de barras')."
@@ -139,14 +142,17 @@ def nydia_procesar_lenguaje_natural(df, pregunta):
 # ----------------------------------------------------
 def handle_chat_input(df):
     """Procesa la entrada del chat del usuario y actualiza la conversación."""
-    user_prompt = st.session_state.chat_prompt
+    # Usamos el valor del chat_prompt
+    user_prompt = st.session_state.chat_prompt 
     
     if user_prompt:
+        # Añadir mensaje del usuario al historial
         st.session_state.chat_history.append({"role": "user", "content": user_prompt})
         
         # Procesar con NLP y obtener sugerencia
         nydia_response = nydia_procesar_lenguaje_natural(df, user_prompt)
         
+        # Añadir respuesta de NydIA al historial
         st.session_state.chat_history.append({"role": "assistant", "content": nydia_response})
         st.session_state.chat_prompt = "" # Limpiar el input
 
@@ -194,7 +200,9 @@ def interfaz_agente_analisis(df_original):
     for col in df.columns:
         if df[col].dtype == 'object':
             try:
+                # Intenta convertir a datetime
                 df[col] = pd.to_datetime(df[col], errors='coerce')
+                # Solo consideramos columna de fecha si tiene al menos 50% de valores válidos
                 if df[col].notna().sum() / len(df) > 0.5:
                     datetime_cols.append(col)
             except Exception:
@@ -202,13 +210,14 @@ def interfaz_agente_analisis(df_original):
         elif pd.api.types.is_datetime64_any_dtype(df[col]):
             datetime_cols.append(col)
     
-    # Filtro de Fechas
+    # Filtro de Fechas (Mejora de UX)
     if datetime_cols:
         col_fecha = st.sidebar.selectbox("Columna de Fecha:", ['Seleccionar'] + datetime_cols)
         
         if col_fecha != 'Seleccionar':
             df_fechas_validas = df[col_fecha].dropna()
             if not df_fechas_validas.empty:
+                # Asegurar que se trabaja con el tipo date
                 min_date = df_fechas_validas.min().date()
                 max_date = df_fechas_validas.max().date()
                 
@@ -240,9 +249,9 @@ def interfaz_agente_analisis(df_original):
                 df = df[df[col].astype(str) == seleccion]
     
     # Filtro de Rango Numérico
-    columnas_numericas = df_original.select_dtypes(include=['number']).columns.tolist()
-    if columnas_numericas:
-        col_num_a_filtrar = st.sidebar.selectbox("Filtro Rango en Columna:", ['Seleccionar'] + columnas_numericas)
+    columnas_numericas_original = df_original.select_dtypes(include=['number']).columns.tolist()
+    if columnas_numericas_original:
+        col_num_a_filtrar = st.sidebar.selectbox("Filtro Rango en Columna:", ['Seleccionar'] + columnas_numericas_original)
         if col_num_a_filtrar != 'Seleccionar':
             min_val = float(df_original[col_num_a_filtrar].min())
             max_val = float(df_original[col_num_a_filtrar].max())
@@ -288,7 +297,7 @@ def interfaz_agente_analisis(df_original):
     sug_type = st.session_state.suggestion_type
 
     if not sug_x or not sug_y:
-        st.error("No se pueden seleccionar ejes X/Y válidos. Revisa tus filtros.")
+        st.error("No se pueden seleccionar ejes X/Y válidos. Revisa tus filtros o pregunta al chat.")
         return
         
     eje_x = st.sidebar.selectbox(
@@ -324,12 +333,13 @@ def interfaz_agente_analisis(df_original):
     st.subheader(f"Resultado | Tipo: **{tipo_grafico}** | Filas analizadas: {len(df)}")
 
     try:
+        # Validación final de columnas antes de graficar
+        if eje_y not in df.columns or (eje_x not in df.columns and tipo_grafico != 'Histograma'):
+             st.error(f"Las columnas seleccionadas ('{eje_x}' o '{eje_y}') no existen en el conjunto de datos filtrado.")
+             return
+                 
         if tipo_grafico in ['Barras', 'Líneas', 'Torta (Pie)']:
             # Agregación de datos
-            if eje_y not in df.columns or eje_x not in df.columns:
-                 st.error(f"Las columnas seleccionadas ('{eje_x}' o '{eje_y}') no existen en el conjunto de datos filtrado.")
-                 return
-                 
             if metodo_agregacion == 'Suma':
                 df_agregado = df.groupby(eje_x)[eje_y].sum().reset_index(name=f'Suma de {eje_y}')
             elif metodo_agregacion == 'Promedio':
@@ -342,33 +352,23 @@ def interfaz_agente_analisis(df_original):
             if tipo_grafico == 'Barras':
                 fig = px.bar(df_agregado, x=eje_x, y=y_col_name, title=f"Distribución: {metodo_agregacion} de {eje_y} por {eje_x}")
             elif tipo_grafico == 'Líneas':
-                # LA LÍNEA CRÍTICA ESTÁ CORREGIDA AQUÍ
                 fig = px.line(df_agregado, x=eje_x, y=y_col_name, title=f"Tendencia: {metodo_agregacion} de {eje_y} a lo largo de {eje_x}")
             elif tipo_grafico == 'Torta (Pie)':
                 fig = px.pie(df_agregado, names=eje_x, values=y_col_name, title=f"Proporción de {metodo_agregacion} de {eje_y} por {eje_x}")
 
         elif tipo_grafico == 'Dispersión (Scatter)':
-             if eje_x not in df.columns or eje_y not in df.columns:
-                 st.error("Los ejes seleccionados no existen en el conjunto de datos filtrado.")
-                 return
              fig = px.scatter(df, x=eje_x, y=eje_y, title=f"Relación entre {eje_x} y {eje_y}", hover_data=columnas_disponibles)
             
         elif tipo_grafico == 'Histograma':
-            if eje_y not in df.columns:
-                 st.error(f"La columna métrica '{eje_y}' no existe en el conjunto de datos filtrado.")
-                 return
             fig = px.histogram(df, x=eje_y, title=f"Distribución de {eje_y}")
             
         elif tipo_grafico == 'Caja (Box Plot)':
-            if eje_x not in df.columns or eje_y not in df.columns:
-                 st.error("Los ejes seleccionados no existen en el conjunto de datos filtrado.")
-                 return
             fig = px.box(df, x=eje_x, y=eje_y, title=f"Distribución de {eje_y} por {eje_x}")
             
         st.plotly_chart(fig, use_container_width=True)
 
     except Exception as e:
-        st.error(f"Ocurrió un error al generar el gráfico: {e}")
+        st.error(f"Ocurrió un error al generar el gráfico. Asegúrate de que las columnas y el tipo de gráfico sean compatibles: {e}")
     
     st.markdown("---")
     st.caption(f"Filas originales consolidadas: {len(df_original)} | Filas analizadas después de filtros: {len(df)}")
@@ -379,7 +379,7 @@ def interfaz_agente_analisis(df_original):
 # ----------------------------------------------------
 def main():
     
-    # Carga de archivos
+    # Carga de archivos (Mantiene la compatibilidad XLS, XLSX, CSV)
     uploaded_files = st.file_uploader(
         "Carga tus archivos de Excel (.xls/.xlsx) o CSV (separado por comas/punto y coma):", 
         type=["xlsx", "xls", "csv"], 
