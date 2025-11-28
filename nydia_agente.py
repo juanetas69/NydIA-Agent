@@ -18,6 +18,7 @@ def initialize_session_state():
         st.session_state.chat_history = [
             {"role": "assistant", "content": "¡Hola! Soy NydIA. Carga tus archivos de datos para empezar. ¿Qué análisis te gustaría hacer?"}
         ]
+    # Se inicializan las sugerencias con None o un valor seguro
     if 'suggestion_x' not in st.session_state:
         st.session_state.suggestion_x = None
     if 'suggestion_y' not in st.session_state:
@@ -126,7 +127,7 @@ def nydia_procesar_lenguaje_natural(df, pregunta):
         respuesta += f"Métrica (Eje Y): **{eje_y}**. "
     if eje_x:
         respuesta += f"Dimensión (Eje X): **{eje_x}**. "
-    respuesta += f"Tipo de Gráfico: **{tipo}**."
+    respuesta += f"Tipo de Gráfico: **{tipo}**. Por favor, revisa la sección '3. Configuración Final' para confirmar."
     
     if not eje_x and not eje_y:
          respuesta = "No pude identificar la Métrica ni la Dimensión. Por favor, sé más específico (ej: 'Quiero la suma de Venta por País en un gráfico de barras')."
@@ -222,6 +223,11 @@ def interfaz_agente_analisis(df_original):
                 else:
                     st.sidebar.error("La fecha de inicio debe ser anterior o igual a la fecha de fin.")
     
+    # Verificar si el DataFrame quedó vacío después de los filtros
+    if df.empty:
+        st.error("No hay datos para graficar después de aplicar los filtros.")
+        return
+        
     # Filtros de Texto (Categorías)
     text_cols = df.select_dtypes(include=['object']).columns
     for col in text_cols:
@@ -249,6 +255,7 @@ def interfaz_agente_analisis(df_original):
                 (df[col_num_a_filtrar] <= rango_seleccionado[1])
             ]
     
+    # Verificar nuevamente si el DataFrame quedó vacío después de más filtros
     if df.empty:
         st.error("No hay datos para graficar después de aplicar los filtros.")
         return
@@ -266,11 +273,26 @@ def interfaz_agente_analisis(df_original):
         st.error("La selección actual no contiene columnas numéricas para la Métrica (Eje Y).")
         return
 
-    # Usar las sugerencias del chat como valores por defecto
-    sug_x = st.session_state.suggestion_x if st.session_state.suggestion_x in columnas_disponibles else columnas_disponibles[0]
-    sug_y = st.session_state.suggestion_y if st.session_state.suggestion_y in columnas_numericas_filtradas else columnas_numericas_filtradas[0]
-    sug_type = st.session_state.suggestion_type
+    # --- Lógica de Selección Robusta para usar sugerencias del chat ---
     
+    # 1. Determinar el eje X
+    sug_x = st.session_state.suggestion_x
+    if sug_x not in columnas_disponibles:
+        # Si la sugerencia no existe en el DF filtrado, usar la primera disponible
+        sug_x = columnas_disponibles[0] if columnas_disponibles else None
+    
+    # 2. Determinar el eje Y
+    sug_y = st.session_state.suggestion_y
+    if sug_y not in columnas_numericas_filtradas:
+        # Si la sugerencia no existe en el DF filtrado, usar la primera numérica disponible
+        sug_y = columnas_numericas_filtradas[0] if columnas_numericas_filtradas else None
+        
+    sug_type = st.session_state.suggestion_type
+
+    if not sug_x or not sug_y:
+        st.error("No se pueden seleccionar ejes X/Y válidos. Revisa tus filtros.")
+        return
+        
     eje_x = st.sidebar.selectbox(
         "Dimensión (Eje X):", 
         columnas_disponibles, 
@@ -307,6 +329,12 @@ def interfaz_agente_analisis(df_original):
         if tipo_grafico in ['Barras', 'Líneas', 'Torta (Pie)']:
             # Agregación de datos
             if metodo_agregacion == 'Suma':
+                # **Aquí estaba el error potencial: si eje_y no existía en el DF filtrado, fallaba.**
+                # La lógica de selección de sug_y debería haberlo prevenido, pero añadimos el chequeo.
+                if eje_y not in df.columns:
+                     st.error(f"La columna métrica '{eje_y}' no existe en el conjunto de datos filtrado. Selecciona otra.")
+                     return
+                     
                 df_agregado = df.groupby(eje_x)[eje_y].sum().reset_index(name=f'Suma de {eje_y}')
             elif metodo_agregacion == 'Promedio':
                 df_agregado = df.groupby(eje_x)[eje_y].mean().reset_index(name=f'Promedio de {eje_y}')
@@ -318,51 +346,4 @@ def interfaz_agente_analisis(df_original):
             if tipo_grafico == 'Barras':
                 fig = px.bar(df_agregado, x=eje_x, y=y_col_name, title=f"{metodo_agregacion} de {eje_y} por {eje_x}")
             elif tipo_grafico == 'Líneas':
-                fig = px.line(df_agregado, x=eje_x, y=y_col_name, title=f"Tendencia: {metodo_agregacion} de {eje_y} a lo largo de {eje_x}")
-            elif tipo_grafico == 'Torta (Pie)':
-                fig = px.pie(df_agregado, names=eje_x, values=y_col_name, title=f"Proporción de {metodo_agregacion} de {eje_y} por {eje_x}")
-
-        elif tipo_grafico == 'Dispersión (Scatter)':
-            fig = px.scatter(df, x=eje_x, y=eje_y, title=f"Relación entre {eje_x} y {eje_y}", hover_data=columnas_disponibles)
-            
-        elif tipo_grafico == 'Histograma':
-            fig = px.histogram(df, x=eje_y, title=f"Distribución de {eje_y}")
-            
-        elif tipo_grafico == 'Caja (Box Plot)':
-            fig = px.box(df, x=eje_x, y=eje_y, title=f"Distribución de {eje_y} por {eje_x}")
-            
-        st.plotly_chart(fig, use_container_width=True)
-
-    except Exception as e:
-        st.error(f"Ocurrió un error al generar el gráfico: {e}")
-    
-    st.markdown("---")
-    st.caption(f"Filas originales consolidadas: {len(df_original)} | Filas analizadas después de filtros: {len(df)}")
-
-
-# ----------------------------------------------------
-# 5. EL BUCLE PRINCIPAL DEL AGENTE
-# ----------------------------------------------------
-def main():
-    
-    # Carga de archivos
-    uploaded_files = st.file_uploader(
-        "Carga tus archivos de Excel (.xls/.xlsx) o CSV (separado por comas/punto y coma):", 
-        type=["xlsx", "xls", "csv"], 
-        accept_multiple_files=True
-    )
-    
-    datos_consolidados = consolidar_archivos(uploaded_files) 
-    
-    # Actualizar estado de carga
-    if not datos_consolidados.empty:
-        st.session_state.df_loaded = True
-        interfaz_agente_analisis(datos_consolidados)
-    else:
-        st.session_state.df_loaded = False
-        st.warning("Aún no hay datos cargados para que NydIA analice.")
-        # Mostrar el chat aunque no haya datos, con el mensaje inicial
-        interfaz_agente_analisis(pd.DataFrame())
-
-if __name__ == "__main__":
-    main()
+                fig = px.line(df_agregado, x=eje_x, y=y_col_name, title=f"Tendencia: {metodo_agregacion} de {eje_y} a lo
