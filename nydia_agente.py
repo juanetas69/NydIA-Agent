@@ -7,14 +7,14 @@ import re
 # ----------------------------------------------------
 # CONFIGURACIÓN DE LA PÁGINA
 # ----------------------------------------------------
-st.set_page_config(layout="wide", page_title="NydIA: Análisis Multi-Formato con Fechas")
+st.set_page_config(layout="wide", page_title="NydIA: Análisis Multi-Formato y Fechas")
 
 # ----------------------------------------------------
-# 1. FUNCIÓN DE PERCEPCIÓN Y CONSOLIDACIÓN (Ahora lee CSV, XLS, XLSX)
+# 1. FUNCIÓN DE PERCEPCIÓN Y CONSOLIDACIÓN (Compatibilidad total de archivos)
 # ----------------------------------------------------
 @st.cache_data
 def consolidar_archivos(uploaded_files):
-    """Procesa una lista de archivos (Excel o CSV) y devuelve un DataFrame consolidado."""
+    """Procesa una lista de archivos (CSV, XLS, XLSX) y devuelve un DataFrame consolidado."""
     
     if not uploaded_files:
         return pd.DataFrame() 
@@ -29,16 +29,17 @@ def consolidar_archivos(uploaded_files):
                 # Lectura de Excel
                 df = pd.read_excel(io.BytesIO(file.getvalue()), engine='openpyxl')
             elif file_extension == 'csv':
-                # Lectura de CSV (asumiendo delimitador coma por defecto)
-                # Usamos encoding 'latin-1' o 'cp1252' común en archivos de Excel exportados
-                df = pd.read_csv(io.StringIO(file.getvalue().decode('utf-8', errors='ignore')), 
-                                 delimiter=',', 
-                                 engine='python') 
-                # Intentamos la coma, si falla, podemos intentar el punto y coma (común en Europa)
-                if len(df.columns) <= 1 and 'sep' not in df.columns:
-                     df = pd.read_csv(io.StringIO(file.getvalue().decode('utf-8', errors='ignore')), 
-                                      delimiter=';', 
-                                      engine='python')
+                # Lectura de CSV: Intentamos coma (,) y luego punto y coma (;)
+                file_content = io.StringIO(file.getvalue().decode('utf-8', errors='ignore'))
+                
+                # Intento 1: Coma como delimitador
+                try:
+                    df = pd.read_csv(file_content, delimiter=',', engine='python')
+                except Exception:
+                    file_content.seek(0) # Regresar al inicio del archivo
+                    # Intento 2: Punto y coma como delimitador
+                    df = pd.read_csv(file_content, delimiter=';', engine='python')
+
             else:
                 st.warning(f"Formato no soportado para el archivo {file.name}. Solo se aceptan .xls, .xlsx, .csv.")
                 continue
@@ -56,7 +57,7 @@ def consolidar_archivos(uploaded_files):
         return pd.DataFrame()
 
 # ----------------------------------------------------
-# 2. FUNCIÓN DE NLP BASADA EN REGLAS
+# 2. FUNCIÓN DE NLP BASADA EN REGLAS (Incluye 'Torta')
 # ----------------------------------------------------
 def nydia_procesar_lenguaje_natural(df, pregunta):
     """
@@ -111,13 +112,12 @@ def interfaz_agente_analisis(df_original):
 
     df = df_original.copy()
     
-    # Intentar convertir columnas de tipo 'object' a datetime si es posible
+    # Detección de columnas de fecha para el filtro
     datetime_cols = []
     for col in df.columns:
         if df[col].dtype == 'object':
             try:
                 df[col] = pd.to_datetime(df[col], errors='coerce')
-                # Si la mayoría de los valores no son NaT, la consideramos una columna de fecha
                 if df[col].notna().sum() / len(df) > 0.5:
                     datetime_cols.append(col)
             except Exception:
@@ -132,7 +132,7 @@ def interfaz_agente_analisis(df_original):
     
     st.sidebar.header("💬 1. Pregúntale a NydIA")
     pregunta_nlp = st.sidebar.text_input(
-        "Ej: Muestra las 'Ventas' por 'Región' en un gráfico de barras.", 
+        "Ej: Muestra las 'Ventas' por 'Región' en un gráfico de torta.", 
         key='nlp_input'
     )
     eje_x_auto, eje_y_auto, tipo_auto = None, None, 'Barras'
@@ -143,7 +143,7 @@ def interfaz_agente_analisis(df_original):
 
     
     # ------------------------------------
-    # B. NUEVO: FILTRO DE FECHAS
+    # B. FILTRO DE FECHAS
     # ------------------------------------
     st.sidebar.markdown("---")
     st.sidebar.header("🗓️ Filtro de Fechas")
@@ -152,32 +152,37 @@ def interfaz_agente_analisis(df_original):
         col_fecha = st.sidebar.selectbox("Columna de Fecha:", ['Seleccionar'] + datetime_cols)
         
         if col_fecha != 'Seleccionar':
-            min_date = df[col_fecha].min().date()
-            max_date = df[col_fecha].max().date()
-            
-            # Usar st.date_input para seleccionar el rango de fechas
-            fecha_inicio = st.sidebar.date_input('Fecha de Inicio', value=min_date, min_value=min_date, max_value=max_date)
-            fecha_fin = st.sidebar.date_input('Fecha de Fin', value=max_date, min_value=min_date, max_value=max_date)
-            
-            # Aplicar filtro si el rango es válido
-            if fecha_inicio <= fecha_fin:
-                df = df[
-                    (df[col_fecha].dt.date >= fecha_inicio) & 
-                    (df[col_fecha].dt.date <= fecha_fin)
-                ]
+            # Aseguramos que la columna no tiene NaT y que es tipo datetime
+            df_fechas_validas = df[col_fecha].dropna()
+            if not df_fechas_validas.empty:
+                min_date = df_fechas_validas.min().date()
+                max_date = df_fechas_validas.max().date()
+                
+                fecha_inicio = st.sidebar.date_input('Fecha de Inicio', value=min_date, min_value=min_date, max_value=max_date)
+                fecha_fin = st.sidebar.date_input('Fecha de Fin', value=max_date, min_value=min_date, max_value=max_date)
+                
+                if fecha_inicio <= fecha_fin:
+                    df = df[
+                        (df[col_fecha].dt.date >= fecha_inicio) & 
+                        (df[col_fecha].dt.date <= fecha_fin)
+                    ]
+                else:
+                    st.sidebar.error("La fecha de inicio debe ser anterior o igual a la fecha de fin.")
             else:
-                st.sidebar.error("La fecha de inicio debe ser anterior o igual a la fecha de fin.")
+                 st.sidebar.warning("La columna de fecha seleccionada no contiene valores válidos para filtrar.")
                 
     # ------------------------------------
-    # C. REFINAMIENTO Y FILTRADO MANUAL (Resto de filtros y rangos)
+    # C. REFINAMIENTO Y FILTRADO MANUAL
     # ------------------------------------
     st.sidebar.markdown("---")
     st.sidebar.header("🔍 2. Refinar y Filtrar")
     
-    # Filtros de Texto (Categorías) - CORREGIDO EL TYPEERROR
+    # Filtros de Texto (Categorías) - SOLUCIÓN TYPEERROR
     text_cols = df.select_dtypes(include=['object']).columns
     for col in text_cols:
         if df[col].nunique() <= 50:
+            
+            # Conversión a str antes de unique() y sorted()
             unique_values = df[col].dropna().astype(str).unique().tolist()
             opciones_filtro = ['TODOS'] + sorted(unique_values)
             
@@ -244,7 +249,7 @@ def interfaz_agente_analisis(df_original):
     )
 
     metodo_agregacion = 'Ninguna'
-    if tipo_grafico in ['Barras', 'Líneas', 'Torta (Pie)']: # Torta necesita agregación
+    if tipo_grafico in ['Barras', 'Líneas', 'Torta (Pie)']:
         metodo_agregacion = st.sidebar.selectbox(
             "Método de Agregación:", 
             ['Suma', 'Promedio', 'Conteo']
@@ -274,6 +279,7 @@ def interfaz_agente_analisis(df_original):
             elif tipo_grafico == 'Líneas':
                 fig = px.line(df_agregado, x=eje_x, y=y_col_name, title=f"Tendencia: {metodo_agregacion} de {eje_y} a lo largo de {eje_x}")
             elif tipo_grafico == 'Torta (Pie)':
+                # Grafico de Torta (Pie Chart)
                 fig = px.pie(df_agregado, names=eje_x, values=y_col_name, title=f"Proporción de {metodo_agregacion} de {eje_y} por {eje_x}")
                 
 
@@ -306,7 +312,8 @@ def main():
         accept_multiple_files=True
     )
     
-    datos_consolidados = consolidar_archivos(uploaded_files)
+    # Nota: La función consolidar_archivos tiene el mismo nombre que antes pero con la lógica mejorada.
+    datos_consolidados = consolidar_archivos(uploaded_files) 
     
     interfaz_agente_analisis(datos_consolidados)
 
