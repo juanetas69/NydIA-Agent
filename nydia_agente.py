@@ -7,12 +7,33 @@ import re
 # ----------------------------------------------------
 # CONFIGURACIÓN DE LA PÁGINA
 # ----------------------------------------------------
-st.set_page_config(layout="wide", page_title="NydIA: Análisis Multi-Formato con Gráfico Pie")
+st.set_page_config(layout="wide", page_title="NydIA: Agente Conversacional de Análisis")
+
+# ----------------------------------------------------
+# INICIALIZACIÓN DEL ESTADO DE SESIÓN (Memoria del Chat)
+# ----------------------------------------------------
+def initialize_session_state():
+    """Inicializa el estado de la sesión para el chat y las sugerencias de NydIA."""
+    if 'chat_history' not in st.session_state:
+        st.session_state.chat_history = [
+            {"role": "assistant", "content": "¡Hola! Soy NydIA. Carga tus archivos de datos para empezar. ¿Qué análisis te gustaría hacer?"}
+        ]
+    # Se inicializan las sugerencias con None o un valor seguro
+    if 'suggestion_x' not in st.session_state:
+        st.session_state.suggestion_x = None
+    if 'suggestion_y' not in st.session_state:
+        st.session_state.suggestion_y = None
+    if 'suggestion_type' not in st.session_state:
+        st.session_state.suggestion_type = 'Barras'
+    if 'df_loaded' not in st.session_state:
+        st.session_state.df_loaded = False
+    
+initialize_session_state()
 
 # ----------------------------------------------------
 # 1. FUNCIÓN DE PERCEPCIÓN Y CONSOLIDACIÓN (Compatibilidad total de archivos)
 # ----------------------------------------------------
-@st.cache_data
+@st.cache_data(show_spinner="Consolidando archivos...")
 def consolidar_archivos(uploaded_files):
     """Procesa una lista de archivos (CSV, XLS, XLSX) y devuelve un DataFrame consolidado."""
     
@@ -26,22 +47,17 @@ def consolidar_archivos(uploaded_files):
             file_extension = file.name.split('.')[-1].lower()
             
             if file_extension in ['xls', 'xlsx']:
-                # Lectura de Excel
                 df = pd.read_excel(io.BytesIO(file.getvalue()), engine='openpyxl')
             elif file_extension == 'csv':
-                # Lectura de CSV: Intentamos coma (,) y luego punto y coma (;)
                 file_content = io.StringIO(file.getvalue().decode('utf-8', errors='ignore'))
-                
-                # Intento 1: Coma como delimitador
                 try:
                     df = pd.read_csv(file_content, delimiter=',', engine='python')
                 except Exception:
-                    file_content.seek(0) # Regresar al inicio del archivo
-                    # Intento 2: Punto y coma como delimitador
+                    file_content.seek(0)
                     df = pd.read_csv(file_content, delimiter=';', engine='python')
 
             else:
-                st.warning(f"Formato no soportado para el archivo {file.name}. Solo se aceptan .xls, .xlsx, .csv.")
+                st.warning(f"Formato no soportado para el archivo {file.name}.")
                 continue
 
             dataframes.append(df)
@@ -61,7 +77,8 @@ def consolidar_archivos(uploaded_files):
 # ----------------------------------------------------
 def nydia_procesar_lenguaje_natural(df, pregunta):
     """
-    Intenta interpretar la pregunta del usuario para preseleccionar el gráfico.
+    Intenta interpretar la pregunta del usuario para preseleccionar el gráfico y actualiza el estado
+    de la sesión con las sugerencias.
     """
     pregunta = pregunta.lower().strip()
     
@@ -70,93 +87,163 @@ def nydia_procesar_lenguaje_natural(df, pregunta):
     
     eje_x, eje_y, tipo = None, None, 'Barras'
     
-    # Intenta determinar el tipo de gráfico (AÑADIDO: Torta)
+    # Detección del tipo de gráfico
     if 'linea' in pregunta or 'tendencia' in pregunta:
         tipo = 'Líneas'
     elif 'dispersión' in pregunta or 'scatter' in pregunta:
         tipo = 'Dispersión (Scatter)'
     elif 'caja' in pregunta or 'boxplot' in pregunta:
         tipo = 'Caja (Box Plot)'
-    elif 'torta' in pregunta or 'pie' in pregunta or 'proporción' in pregunta:
+    elif 'torta' in pregunta or 'pie' in pregunta or 'proporción' in pregunta or 'porcentaje' in pregunta:
         tipo = 'Torta (Pie)'
         
-    # Intenta determinar los ejes X e Y por coincidencia de palabras clave
+    # Detección de ejes (métricas)
     for m in metricas:
         if m in pregunta:
-            # Encuentra el nombre original de la columna
             eje_y = df.select_dtypes(include=['number']).columns.tolist()[dimensiones.index(m)]
             break
             
+    # Detección de ejes (dimensiones)
     for d in dimensiones:
         if d in pregunta and d != (eje_y.lower() if eje_y else None): 
-            # Encuentra el nombre original de la columna
             eje_x = df.columns.tolist()[dimensiones.index(d)]
             break
 
+    # Valores por defecto si no se detecta nada, pero hay datos
     if not eje_y and metricas:
         eje_y = df.select_dtypes(include=['number']).columns.tolist()[0]
-        
-    st.sidebar.success(f"NydIA sugiere: Y='{eje_y or '---'}', X='{eje_x or '---'}', Tipo='{tipo}'.")
-    return eje_x, eje_y, tipo
+    if not eje_x and dimensiones:
+        eje_x = df.columns.tolist()[0]
 
+
+    # Actualizar estado de la sesión con las sugerencias
+    st.session_state.suggestion_x = eje_x
+    st.session_state.suggestion_y = eje_y
+    st.session_state.suggestion_type = tipo
+    
+    
+    # Generar respuesta de NydIA para el chat
+    respuesta = "Interpretación: "
+    if eje_y:
+        respuesta += f"Métrica (Eje Y): **{eje_y}**. "
+    if eje_x:
+        respuesta += f"Dimensión (Eje X): **{eje_x}**. "
+    respuesta += f"Tipo de Gráfico: **{tipo}**. Los valores han sido preseleccionados en la sección '3. Configuración Final'."
+    
+    if not eje_x and not eje_y:
+         respuesta = "No pude identificar la Métrica ni la Dimensión. Por favor, sé más específico (ej: 'Quiero la suma de Venta por País en un gráfico de barras')."
+         
+    return respuesta
 
 # ----------------------------------------------------
-# 3. FUNCIÓN PRINCIPAL DE LA INTERFAZ
+# 3. FUNCIÓN DE CHAT INTERACTIVO
+# ----------------------------------------------------
+def handle_chat_input(df):
+    """Procesa la entrada del chat del usuario y actualiza la conversación."""
+    user_prompt = st.session_state.chat_prompt
+    
+    if user_prompt:
+        st.session_state.chat_history.append({"role": "user", "content": user_prompt})
+        
+        # Procesar con NLP y obtener sugerencia
+        nydia_response = nydia_procesar_lenguaje_natural(df, user_prompt)
+        
+        st.session_state.chat_history.append({"role": "assistant", "content": nydia_response})
+        st.session_state.chat_prompt = "" # Limpiar el input
+
+# ----------------------------------------------------
+# 4. FUNCIÓN PRINCIPAL DE LA INTERFAZ
 # ----------------------------------------------------
 def interfaz_agente_analisis(df_original):
     
-    st.title("🤖 NydIA: Agente de Análisis con Lenguaje Natural")
+    st.title("🤖 NydIA: Agente Conversacional de Análisis")
     st.markdown("---")
     
-    if df_original.empty:
-        st.warning("Carga tus archivos para empezar.")
-        return
+    # --- PANELES LATERALES (CHAT Y FILTROS) ---
+    
+    # Panel 1: Chat con NydIA (parte superior de la sidebar)
+    st.sidebar.header("💬 1. Chatea con NydIA")
+    
+    chat_container = st.sidebar.container(height=300)
+    
+    for message in st.session_state.chat_history:
+        with chat_container:
+            if message["role"] == "user":
+                st.chat_message("user").write(message["content"])
+            else:
+                st.chat_message("assistant").write(message["content"])
 
-    df = df_original.copy()
-    
-    # ------------------------------------
-    # A. INTERACCIÓN NLP Y FILTROS
-    # ------------------------------------
-    
-    st.sidebar.header("💬 1. Pregúntale a NydIA")
-    
-    pregunta_nlp = st.sidebar.text_input(
-        "Ej: Muestra las 'Ventas' por 'Región' en un gráfico de barras.", 
-        key='nlp_input'
+    # Evita errores si no hay datos cargados
+    if not st.session_state.df_loaded:
+        st.sidebar.caption("Carga tus datos para iniciar la conversación.")
+        return 
+
+    # Input del chat
+    st.sidebar.chat_input(
+        "Pregúntale a NydIA (ej: 'Ventas por Región en torta')", 
+        key="chat_prompt", 
+        on_submit=lambda: handle_chat_input(df_original)
     )
-    
-    # Inicialización de variables de selección
-    eje_x_auto, eje_y_auto, tipo_auto = None, None, 'Barras'
-    
-    if pregunta_nlp:
-        eje_x_auto, eje_y_auto, tipo_auto = nydia_procesar_lenguaje_natural(df, pregunta_nlp)
-        st.info(f"NydIA ha pre-seleccionado el gráfico.")
 
-    
-    # ------------------------------------
-    # B. REFINAMIENTO Y FILTRADO MANUAL (BLOQUE CORREGIDO)
-    # ------------------------------------
     st.sidebar.markdown("---")
     st.sidebar.header("🔍 2. Refinar y Filtrar")
     
-    # Filtros de Texto (Categorías) - SOLUCIÓN TYPEERROR
+    df = df_original.copy()
+    
+    # Detección de columnas de fecha para el filtro
+    datetime_cols = []
+    for col in df.columns:
+        if df[col].dtype == 'object':
+            try:
+                df[col] = pd.to_datetime(df[col], errors='coerce')
+                if df[col].notna().sum() / len(df) > 0.5:
+                    datetime_cols.append(col)
+            except Exception:
+                pass 
+        elif pd.api.types.is_datetime64_any_dtype(df[col]):
+            datetime_cols.append(col)
+    
+    # Filtro de Fechas
+    if datetime_cols:
+        col_fecha = st.sidebar.selectbox("Columna de Fecha:", ['Seleccionar'] + datetime_cols)
+        
+        if col_fecha != 'Seleccionar':
+            df_fechas_validas = df[col_fecha].dropna()
+            if not df_fechas_validas.empty:
+                min_date = df_fechas_validas.min().date()
+                max_date = df_fechas_validas.max().date()
+                
+                fecha_inicio = st.sidebar.date_input('Fecha de Inicio', value=min_date, min_value=min_date, max_value=max_date)
+                fecha_fin = st.sidebar.date_input('Fecha de Fin', value=max_date, min_value=min_date, max_value=max_date)
+                
+                if fecha_inicio <= fecha_fin:
+                    df = df[
+                        (df[col_fecha].dt.date >= fecha_inicio) & 
+                        (df[col_fecha].dt.date <= fecha_fin)
+                    ]
+                else:
+                    st.sidebar.error("La fecha de inicio debe ser anterior o igual a la fecha de fin.")
+    
+    # Verificar si el DataFrame quedó vacío después de los filtros
+    if df.empty:
+        st.error("No hay datos para graficar después de aplicar los filtros.")
+        return
+        
+    # Filtros de Texto (Categorías)
     text_cols = df.select_dtypes(include=['object']).columns
     for col in text_cols:
         if df[col].nunique() <= 50:
-            
-            # Conversión a str antes de unique() y sorted()
             unique_values = df[col].dropna().astype(str).unique().tolist()
             opciones_filtro = ['TODOS'] + sorted(unique_values)
             
             seleccion = st.sidebar.selectbox(f"Filtrar por **{col}**:", opciones_filtro, key=f"filter_{col}")
             if seleccion != 'TODOS':
-                # Aplicamos el filtro comparando también el valor como str
                 df = df[df[col].astype(str) == seleccion]
     
     # Filtro de Rango Numérico
-    columnas_numericas = df_original.select_dtypes(include=['number']).columns.tolist()
-    if columnas_numericas:
-        col_num_a_filtrar = st.sidebar.selectbox("Filtro Rango en Columna:", ['Seleccionar'] + columnas_numericas)
+    columnas_numericas_original = df_original.select_dtypes(include=['number']).columns.tolist()
+    if columnas_numericas_original:
+        col_num_a_filtrar = st.sidebar.selectbox("Filtro Rango en Columna:", ['Seleccionar'] + columnas_numericas_original)
         if col_num_a_filtrar != 'Seleccionar':
             min_val = float(df_original[col_num_a_filtrar].min())
             max_val = float(df_original[col_num_a_filtrar].max())
@@ -169,12 +256,13 @@ def interfaz_agente_analisis(df_original):
                 (df[col_num_a_filtrar] <= rango_seleccionado[1])
             ]
     
+    # Verificar nuevamente si el DataFrame quedó vacío después de más filtros
     if df.empty:
         st.error("No hay datos para graficar después de aplicar los filtros.")
         return
 
     # ------------------------------------
-    # C. CONFIGURACIÓN FINAL DEL GRÁFICO
+    # C. CONFIGURACIÓN FINAL DEL GRÁFICO (USA LAS SUGERENCIAS DEL CHAT)
     # ------------------------------------
     st.sidebar.markdown("---")
     st.sidebar.header("📈 3. Configuración Final")
@@ -186,11 +274,28 @@ def interfaz_agente_analisis(df_original):
         st.error("La selección actual no contiene columnas numéricas para la Métrica (Eje Y).")
         return
 
-    # Usar valores autoseleccionados por NydIA si son válidos
-    eje_x_index = columnas_disponibles.index(eje_x_auto) if eje_x_auto in columnas_disponibles else 0
-    eje_y_index = columnas_numericas_filtradas.index(eje_y_auto) if eje_y_auto in columnas_numericas_filtradas else 0
+    # --- Lógica de Selección Robusta para usar sugerencias del chat ---
     
+    # 1. Determinar el eje X
+    sug_x = st.session_state.suggestion_x
+    if sug_x not in columnas_disponibles:
+        sug_x = columnas_disponibles[0] if columnas_disponibles else None
     
+    # 2. Determinar el eje Y
+    sug_y = st.session_state.suggestion_y
+    if sug_y not in columnas_numericas_filtradas:
+        sug_y = columnas_numericas_filtradas[0] if columnas_numericas_filtradas else None
+        
+    sug_type = st.session_state.suggestion_type
+
+    if not sug_x or not sug_y:
+        st.error("No se pueden seleccionar ejes X/Y válidos. Revisa tus filtros o pregunta al chat.")
+        return
+        
+    # Usar el índice del valor sugerido
+    eje_x_index = columnas_disponibles.index(sug_x) if sug_x in columnas_disponibles else 0
+    eje_y_index = columnas_numericas_filtradas.index(sug_y) if sug_y in columnas_numericas_filtradas else 0
+        
     eje_x = st.sidebar.selectbox(
         "Dimensión (Eje X):", 
         columnas_disponibles, 
@@ -202,10 +307,9 @@ def interfaz_agente_analisis(df_original):
         index=eje_y_index
     )
 
-    # TIPOS DE GRÁFICO (AÑADIDO: Torta (Pie))
     tipos_grafico = ['Barras', 'Líneas', 'Dispersión (Scatter)', 'Histograma', 'Caja (Box Plot)', 'Torta (Pie)']
-    tipo_grafico_index = tipos_grafico.index(tipo_auto) if tipo_auto in tipos_grafico else 0
-
+    tipo_grafico_index = tipos_grafico.index(sug_type) if sug_type in tipos_grafico else 0
+    
     tipo_grafico = st.sidebar.selectbox(
         "Tipo de Gráfico:", 
         tipos_grafico,
@@ -213,7 +317,7 @@ def interfaz_agente_analisis(df_original):
     )
 
     metodo_agregacion = 'Ninguna'
-    if tipo_grafico in ['Barras', 'Líneas', 'Torta (Pie)']: # Torta necesita agregación
+    if tipo_grafico in ['Barras', 'Líneas', 'Torta (Pie)']:
         metodo_agregacion = st.sidebar.selectbox(
             "Método de Agregación:", 
             ['Suma', 'Promedio', 'Conteo']
@@ -221,12 +325,17 @@ def interfaz_agente_analisis(df_original):
     
     
     # ------------------------------------
-    # D. GENERACIÓN DEL GRÁFICO (ACCIÓN)
+    # D. GENERACIÓN DEL GRÁFICO (Punto de acción principal)
     # ------------------------------------
     
     st.subheader(f"Resultado | Tipo: **{tipo_grafico}** | Filas analizadas: {len(df)}")
 
     try:
+        # Validación final de columnas
+        if eje_y not in df.columns or (eje_x not in df.columns and tipo_grafico != 'Histograma'):
+             st.error(f"Las columnas seleccionadas ('{eje_x}' o '{eje_y}') no existen en el conjunto de datos filtrado. Revisa la sección 3.")
+             return
+                 
         if tipo_grafico in ['Barras', 'Líneas', 'Torta (Pie)']:
             # Agregación de datos
             if metodo_agregacion == 'Suma':
@@ -236,18 +345,22 @@ def interfaz_agente_analisis(df_original):
             else: # Conteo
                 df_agregado = df.groupby(eje_x).size().reset_index(name='Conteo de Elementos')
             
+            # **NUEVA VERIFICACIÓN DE ROBUSTEZ:**
+            if df_agregado.empty:
+                 st.warning("El DataFrame agregado está vacío. No se puede generar el gráfico.")
+                 return
+                 
             y_col_name = df_agregado.columns[-1] 
             
             if tipo_grafico == 'Barras':
-                fig = px.bar(df_agregado, x=eje_x, y=y_col_name, title=f"{metodo_agregacion} de {eje_y} por {eje_x}")
+                fig = px.bar(df_agregado, x=eje_x, y=y_col_name, title=f"Distribución: {metodo_agregacion} de {eje_y} por {eje_x}")
             elif tipo_grafico == 'Líneas':
                 fig = px.line(df_agregado, x=eje_x, y=y_col_name, title=f"Tendencia: {metodo_agregacion} de {eje_y} a lo largo de {eje_x}")
             elif tipo_grafico == 'Torta (Pie)':
-                # Grafico de Torta (Pie Chart)
                 fig = px.pie(df_agregado, names=eje_x, values=y_col_name, title=f"Proporción de {metodo_agregacion} de {eje_y} por {eje_x}")
 
         elif tipo_grafico == 'Dispersión (Scatter)':
-            fig = px.scatter(df, x=eje_x, y=eje_y, title=f"Relación entre {eje_x} y {eje_y}", hover_data=columnas_disponibles)
+             fig = px.scatter(df, x=eje_x, y=eje_y, title=f"Relación entre {eje_x} y {eje_y}", hover_data=columnas_disponibles)
             
         elif tipo_grafico == 'Histograma':
             fig = px.histogram(df, x=eje_y, title=f"Distribución de {eje_y}")
@@ -258,27 +371,35 @@ def interfaz_agente_analisis(df_original):
         st.plotly_chart(fig, use_container_width=True)
 
     except Exception as e:
-        st.error(f"Ocurrió un error al generar el gráfico. Asegúrate de que las columnas sean adecuadas para el tipo de gráfico: {e}")
+        st.error(f"Ocurrió un error al generar el gráfico. Esto puede deberse a tipos de datos incompatibles o datos insuficientes: {e}")
     
     st.markdown("---")
     st.caption(f"Filas originales consolidadas: {len(df_original)} | Filas analizadas después de filtros: {len(df)}")
 
 
 # ----------------------------------------------------
-# 4. EL BUCLE PRINCIPAL DEL AGENTE
+# 5. EL BUCLE PRINCIPAL DEL AGENTE
 # ----------------------------------------------------
 def main():
     
+    # Carga de archivos
     uploaded_files = st.file_uploader(
         "Carga tus archivos de Excel (.xls/.xlsx) o CSV (separado por comas/punto y coma):", 
         type=["xlsx", "xls", "csv"], 
         accept_multiple_files=True
     )
     
-    # La función de consolidación ahora maneja múltiples formatos
     datos_consolidados = consolidar_archivos(uploaded_files) 
     
-    interfaz_agente_analisis(datos_consolidados)
+    # Actualizar estado de carga
+    if not datos_consolidados.empty:
+        st.session_state.df_loaded = True
+        interfaz_agente_analisis(datos_consolidados)
+    else:
+        st.session_state.df_loaded = False
+        st.warning("Aún no hay datos cargados para que NydIA analice.")
+        # Mostrar el chat aunque no haya datos, con el mensaje inicial
+        interfaz_agente_analisis(pd.DataFrame())
 
 if __name__ == "__main__":
     main()
